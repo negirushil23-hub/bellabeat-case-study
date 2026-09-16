@@ -1,0 +1,11 @@
+# Raw data (large, and better sourced from Kaggle directly for licensing clarity)
+data/raw/mar_apr/*.csv
+data/raw/apr_may/*.csv
+
+# Python
+__pycache__/
+*.pyc
+
+# macOS
+.DS_Store
+INTERVIEW_PREP.md

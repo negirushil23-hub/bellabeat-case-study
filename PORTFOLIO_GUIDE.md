@@ -26,12 +26,12 @@ There were some reliability issues with certain aspects of the analysis, as data
 
 ### Sleep dating
 
-Minute level sleep logs were first dated minute by minute, which split any night that crossed midnight into two partial days and inflated the share of short nights (about 52% under 7 hours, against about 44% after the fix). Each sleep session is now dated by the day it ended, matching the official daily file, and both sources use the same 60-minute minimum time in bed.
+Minute-level sleep logs were first dated minute by minute, which split any night that crossed midnight into two partial days and inflated the share of short nights (about 52% under 7 hours, against about 44% after the fix). Each sleep session is now dated by the day it ended, matching the official daily file, and both sources use the same 60-minute minimum time in bed.
 
 ## Reproducing this analysis
 
 ```bash
-   python3 -m venv .venv
+python3 -m venv .venv
 source .venv/bin/activate
 pip install pandas matplotlib numpy
 python scripts/analysis_month1.py

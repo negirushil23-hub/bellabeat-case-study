@@ -24,9 +24,15 @@ Due to the structure of the original dataset (divided into two separate folders 
 
 There were some reliability issues with certain aspects of the analysis, as datasets for heart rate and weight weren't complete, with participants not consistently logging data points across the sample and time frame. Well under half the users had logged data for these observation metrics, most of which was captured inconsistently, leaving gaps in the analysis.
 
+### Sleep dating
+
+Minute level sleep logs were first dated minute by minute, which split any night that crossed midnight into two partial days and inflated the share of short nights (about 52% under 7 hours, against about 44% after the fix). Each sleep session is now dated by the day it ended, matching the official daily file, and both sources use the same 60-minute minimum time in bed.
+
 ## Reproducing this analysis
 
 ```bash
+   python3 -m venv .venv
+source .venv/bin/activate
 pip install pandas matplotlib numpy
 python scripts/analysis_month1.py
 python scripts/analysis_combined.py

@@ -9,9 +9,6 @@ __pycache__/
 # macOS
 .DS_Store
 
-# Personal notes
-INTERVIEW_PREP.md
-
 # Local workflow scripts (not part of the published project)
 scripts/quiet_update.sh
 

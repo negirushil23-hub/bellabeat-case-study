@@ -37,8 +37,8 @@ a partial-column export (filename often includes "-selected-columns"). Use
 the main "Download" button instead to get the full 15-column file. If only
 the partial version is available, the script falls back to reconstructing
 the same data from `dailySteps_merged.csv` + `dailyCalories_merged.csv` +
-`dailyIntensities_merged.csv`; verified byte-exact against the real file
-on every column.
+`dailyIntensities_merged.csv`; verified identical to the real file
+on every column it contains (the three distance columns can't be rebuilt and are left empty).
 
 ## Known data quality issues (already handled by the scripts)
 
@@ -53,7 +53,7 @@ on every column.
   appear in both months' weight files on the boundary day. Deduplicated by
   `LogId`.
 - **No combined April-May `dailyActivity_merged.csv`**: use the direct file if you
-  have it (confirmed byte-exact match on every column against the reconstruction
+  have it (confirmed match on every column that can be reconstructed, against the reconstruction
   below). If unavailable, reconstruct from `dailySteps_merged.csv` +
   `dailyCalories_merged.csv` + `dailyIntensities_merged.csv` instead, the script
   handles both automatically depending on which file is present.

@@ -1,37 +1,22 @@
 """
-Bellabeat Case Study: Combined 2-Month Smart Device Usage Analysis
-=====================================================================
-Author: Rushil Negi
-Dataset: FitBit Fitness Tracker Data (CC0: Public Domain), via Mobius on Kaggle
-          https://www.kaggle.com/datasets/arashnic/fitbit
+Bellabeat case study: combined two-month analysis.
+Data: FitBit Fitness Tracker Data (CC0), https://www.kaggle.com/datasets/arashnic/fitbit
 
-This dataset ships as TWO separate monthly exports (March 12 - April 12,
-2016 and April 12 - May 12, 2016) with several files sharing IDENTICAL
-NAMES across both exports (dailyActivity_merged.csv, hourlySteps_merged.csv,
-heartrate_seconds_merged.csv, weightLogInfo_merged.csv, minuteSleep_merged.csv
-all appear in both). Keep the two exports in SEPARATE folders when you
-download them (see --mar-apr-dir / --apr-may-dir below) or one month's
-files will silently overwrite the other's before you ever get to combine
-them.
+The dataset comes as two exports (Mar 12 - Apr 12 and Apr 12 - May 12, 2016)
+with identically named files, so keep them in separate folders or one will
+overwrite the other.
 
-This script:
-1. Loads both months' daily activity, reconciling the fact that the two
-   exports OVERLAP on April 12 with conflicting values (the March-April
-   file's April 12 is a partial/truncated day cut off by a device-sync
-   boundary; the April-May file's April 12 is complete). The partial
-   version is dropped.
-2. Same boundary-day fix applied to hourly steps and heart rate, which
-   show the identical truncation pattern.
-3. Combines sleep from two different source formats: minute-level logs
-   for March-April (no official rollup was included in that export) and
-   the official sleepDay_merged file for April-May.
-4. Segments users, computes correlations, and generates all 8 report charts.
+What the script does:
+1. Combines both months. April 12 is in both exports and the March-April
+   version is cut off part way through the day, so that version is dropped
+   (daily activity, hourly steps and heart rate).
+2. Builds one sleep table from minute-level logs (Mar-Apr) and the official
+   sleepDay file (Apr-May).
+3. Segments users, calculates correlations and writes the 8 report charts.
 
 Run:
-    python analysis_combined.py \
-        --mar-apr-dir ./data/raw/mar_apr \
-        --apr-may-dir ./data/raw/apr_may \
-        --out-dir ./reports/combined_mar_may/images
+    python analysis_combined.py --mar-apr-dir ./data/raw/mar_apr \
+        --apr-may-dir ./data/raw/apr_may --out-dir ./reports/combined_mar_may/images
 """
 
 import argparse
@@ -42,9 +27,6 @@ import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 
-# ---------------------------------------------------------------------------
-# Config
-# ---------------------------------------------------------------------------
 COLORS = {
     "teal": "#1F7A6C", "coral": "#E76F51", "navy": "#264653",
     "gold": "#E9C46A", "grey": "#8D99AE",
@@ -58,11 +40,6 @@ DOW_ORDER = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday",
 BOUNDARY_DATE = "2016-04-12"  # the day both monthly exports overlap on
 
 
-# ---------------------------------------------------------------------------
-# Loaders: each combines its two source files and resolves the boundary-day
-# conflict / file-specific data quality issue documented in the module
-# docstring above.
-# ---------------------------------------------------------------------------
 
 def load_combined_daily_activity(mar_apr_dir, apr_may_dir):
     """Daily steps/calories/activity minutes, both months combined.
@@ -70,7 +47,9 @@ def load_combined_daily_activity(mar_apr_dir, apr_may_dir):
     Both months use a direct dailyActivity_merged.csv when present. If
     April-May's combined file isn't available, it's reconstructed from its
     three component files instead (dailySteps/dailyCalories/dailyIntensities
-    _merged.csv).
+    _merged.csv). The fallback has no distance columns, so TotalDistance,
+    TrackerDistance and LoggedActivitiesDistance are left as NA; every column
+    it does contain matches the real file.
     """
     month1 = pd.read_csv(os.path.join(mar_apr_dir, "dailyActivity_merged.csv"))
     month1["ActivityDate"] = pd.to_datetime(month1["ActivityDate"], format="%m/%d/%Y")
@@ -120,16 +99,20 @@ def load_combined_sleep(mar_apr_dir, apr_may_dir):
     """
     ms = pd.read_csv(os.path.join(mar_apr_dir, "minuteSleep_merged.csv"))
     ms["date_parsed"] = pd.to_datetime(ms["date"], format="%m/%d/%Y %I:%M:%S %p")
-    ms["SleepDate"] = ms["date_parsed"].dt.normalize()
-    per_log = ms.groupby(["Id", "SleepDate", "logId"]).agg(
+    # Date each sleep session (logId) by the day it ENDED (the wake date), as the
+    # official sleepDay file does. Dating each minute separately would split any
+    # night that crosses midnight into two partial days.
+    ms["is_asleep"] = (ms["value"] == 1).astype(int)
+    per_log = ms.groupby(["Id", "logId"]).agg(
+        WakeTime=("date_parsed", "max"),
         TotalMinutesRecorded=("value", "count"),
-        TotalMinutesAsleep=("value", lambda x: (x == 1).sum()),
+        TotalMinutesAsleep=("is_asleep", "sum"),
     ).reset_index()
+    per_log["SleepDate"] = per_log["WakeTime"].dt.normalize()
     month1 = per_log.groupby(["Id", "SleepDate"]).agg(
         TotalMinutesAsleep=("TotalMinutesAsleep", "sum"),
         TotalTimeInBed=("TotalMinutesRecorded", "sum"),
     ).reset_index()
-    month1 = month1[month1["TotalTimeInBed"] > 60]  # drop short-nap noise
     month1["SleepEfficiency"] = (month1["TotalMinutesAsleep"] / month1["TotalTimeInBed"] * 100).round(1)
 
     sd = pd.read_csv(os.path.join(apr_may_dir, "sleepDay_merged.csv"))
@@ -139,6 +122,11 @@ def load_combined_sleep(mar_apr_dir, apr_may_dir):
         TotalTimeInBed=("TotalTimeInBed", "sum"),
     ).reset_index().rename(columns={"SleepDay": "SleepDate"})
     month2["SleepEfficiency"] = (month2["TotalMinutesAsleep"] / month2["TotalTimeInBed"] * 100).round(1)
+
+    # Same short-nap floor for both sources so they are comparable
+    month1 = month1[month1["TotalTimeInBed"] > 60]
+    month2 = month2[month2["TotalTimeInBed"] > 60]
+    month1["SleepEfficiency"] = (month1["TotalMinutesAsleep"] / month1["TotalTimeInBed"] * 100).round(1)
 
     combined = pd.concat([month1, month2], ignore_index=True)
     # Boundary night: keep the official (month2, appears last) version
@@ -165,15 +153,15 @@ def _read_headerless_or_normal(path, expected_cols):
         first_line = f.readline().strip()
     if first_line.replace(" ", "") == ",".join(expected_cols).replace(" ", ""):
         return pd.read_csv(path)
-    # header missing from top; assume it's a data row, and drop a
-    # trailing header-as-data row if present at the end of the file
+    # Header isn't on the first line. In this dataset it was found on the LAST
+    # line, so read with explicit names and skip that final row.
     df = pd.read_csv(path, header=None, names=expected_cols, skipfooter=1, engine="python")
     return df
 
 
 def load_combined_heartrate(mar_apr_dir, apr_may_dir):
-    """Second-level heart rate, both months combined.
-    """
+    """Second-level heart rate, both months combined. The March-April file's
+    April 12 is truncated (device-sync cutoff), so that day is dropped."""
     cols = ["Id", "Time", "Value"]
     month1 = _read_headerless_or_normal(os.path.join(mar_apr_dir, "heartrate_seconds_merged.csv"), cols)
     month1["Time"] = pd.to_datetime(month1["Time"], format="%m/%d/%Y %I:%M:%S %p")
@@ -188,8 +176,8 @@ def load_combined_heartrate(mar_apr_dir, apr_may_dir):
 
 
 def load_combined_weight(mar_apr_dir, apr_may_dir):
-    """Manual/automatic weight logs, both months combined.
-    """
+    """Manual/automatic weight logs, both months combined. The two exports share
+    duplicate entries on the boundary day, so rows are de-duplicated by LogId."""
     cols = ["Id", "Date", "WeightKg", "WeightPounds", "Fat", "BMI", "IsManualReport", "LogId"]
     month1 = _read_headerless_or_normal(os.path.join(mar_apr_dir, "weightLogInfo_merged.csv"), cols)
     month2 = _read_headerless_or_normal(os.path.join(apr_may_dir, "weightLogInfo_merged.csv"), cols)
@@ -201,9 +189,6 @@ def load_combined_weight(mar_apr_dir, apr_may_dir):
     return combined
 
 
-# ---------------------------------------------------------------------------
-# Segmentation / classification
-# ---------------------------------------------------------------------------
 
 def classify_activity(avg_steps):
     if avg_steps < 5000:
@@ -242,9 +227,6 @@ def hourly_patterns(hourly_df):
     return hourly_avg, dow_avg
 
 
-# ---------------------------------------------------------------------------
-# Chart builders
-# ---------------------------------------------------------------------------
 
 def chart_hourly_steps(hourly_avg, out_dir):
     c = COLORS
@@ -260,7 +242,8 @@ def chart_hourly_steps(hourly_avg, out_dir):
 def chart_dow_steps(dow_avg, out_dir):
     c = COLORS
     fig, ax = plt.subplots(figsize=(8, 4.5))
-    colors = [c["coral"] if d == dow_avg.idxmin() else (c["gold"] if d == dow_avg.idxmax() else c["teal"]) for d in dow_avg.index]
+    top2 = set(dow_avg.nlargest(2).index)
+    colors = [c["coral"] if d == dow_avg.idxmin() else (c["gold"] if d in top2 else c["teal"]) for d in dow_avg.index]
     ax.bar(dow_avg.index, dow_avg.values, color=colors)
     ax.axhline(7500, color=c["navy"], linestyle="--", linewidth=1, alpha=0.6)
     ax.set_ylabel("Average Total Steps")
@@ -354,15 +337,12 @@ def chart_logging_consistency(user_avg, out_dir):
     plt.tight_layout(); fig.savefig(os.path.join(out_dir, "08_logging_consistency.png"), dpi=160); plt.close(fig)
 
 
-# ---------------------------------------------------------------------------
-# Main
-# ---------------------------------------------------------------------------
 
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--mar-apr-dir", default="./data/raw/mar_apr", help="Folder with the March 12-April 12 export")
     parser.add_argument("--apr-may-dir", default="./data/raw/apr_may", help="Folder with the April 12-May 12 export")
-    parser.add_argument("--out-dir", default="./images")
+    parser.add_argument("--out-dir", default="./reports/combined_mar_may/images")
     args = parser.parse_args()
     os.makedirs(args.out_dir, exist_ok=True)
 
@@ -406,6 +386,26 @@ def main():
     m = merged.dropna(subset=["TotalMinutesAsleep"])
     print(f"Sedentary-Sleep correlation: {m[['SedentaryMinutes','TotalMinutesAsleep']].corr().iloc[0,1]:.2f}")
     print(f"Steps-Calories correlation: {da[['TotalSteps','Calories']].corr().iloc[0,1]:.2f}")
+
+    # --- Everything below is a number quoted in the report ---
+    print("\n=== Report check ===")
+    print(f"Zero-step days: {(da['TotalSteps']==0).sum()} of {len(da)} ({(da['TotalSteps']==0).mean()*100:.1f}%)")
+    print("Avg minutes/day:", {k: round(da[k].mean()) for k in
+          ["SedentaryMinutes", "LightlyActiveMinutes", "FairlyActiveMinutes", "VeryActiveMinutes"]})
+    print("Segments:", user_avg["ActivityClass"].value_counts().to_dict())
+    peak = hourly_avg.loc[hourly_avg["StepTotal"].idxmax()]
+    print(f"Peak hour: {int(peak['Hour'])}:00 ({peak['StepTotal']:.0f} avg steps)")
+    print("Day-of-week avg steps:\n", dow_avg.round(0).to_string())
+    print(f"Sleep (all {len(sleep)} records): efficiency {sleep['SleepEfficiency'].mean():.1f}%, "
+          f"median {sleep['TotalMinutesAsleep'].median()/60:.2f} h, "
+          f"<7h {(sleep['TotalMinutesAsleep']<420).mean()*100:.1f}%")
+    print(f"Matched activity+sleep days: {len(m)} of {len(da)}")
+    print(f"Steps-Sleep correlation: {m[['TotalSteps','TotalMinutesAsleep']].corr().iloc[0,1]:.2f}")
+    ua = user_avg.copy()
+    ua["Bucket"] = pd.cut(ua["LoggingRate"], bins=[0, 50, 70, 90, 100],
+                          labels=["<50%", "50-70%", "70-90%", "90-100%"], include_lowest=True)
+    print("Logging buckets:", ua["Bucket"].value_counts().sort_index().to_dict())
+    print(f"Weight: {len(weight)/weight['Id'].nunique():.1f} entries per logging user")
     print(f"Charts written to {args.out_dir}")
 
 

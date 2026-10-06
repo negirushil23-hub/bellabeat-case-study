@@ -21,6 +21,7 @@ os.makedirs(OUT, exist_ok=True)
 def load_daily_activity(path):
     da = pd.read_csv(path)
     da["ActivityDate"] = pd.to_datetime(da["ActivityDate"], format="%m/%d/%Y")
+    da = da[da["ActivityDate"] < pd.Timestamp("2016-04-12")]  # April 12 is truncated in this export
     da["Weekday"] = da["ActivityDate"].dt.day_name()
     da["IsWeekend"] = da["ActivityDate"].dt.dayofweek >= 5
     da["TotalActiveMinutes"] = da["VeryActiveMinutes"]+da["FairlyActiveMinutes"]+da["LightlyActiveMinutes"]
@@ -29,10 +30,14 @@ def load_daily_activity(path):
 def aggregate_sleep(path):
     ms = pd.read_csv(path)
     ms["date_parsed"] = pd.to_datetime(ms["date"], format="%m/%d/%Y %I:%M:%S %p")
-    ms["SleepDate"] = ms["date_parsed"].dt.date
-    per_log = ms.groupby(["Id","SleepDate","logId"]).agg(
+    # Date each session (logId) by the day it ENDED, so a night that crosses
+    # midnight isn't split into two partial days.
+    ms["is_asleep"] = (ms["value"]==1).astype(int)
+    per_log = ms.groupby(["Id","logId"]).agg(
+        WakeTime=("date_parsed","max"),
         TotalMinutesRecorded=("value","count"),
-        TotalMinutesAsleep=("value", lambda x: (x==1).sum())).reset_index()
+        TotalMinutesAsleep=("is_asleep","sum")).reset_index()
+    per_log["SleepDate"] = per_log["WakeTime"].dt.normalize()
     daily = per_log.groupby(["Id","SleepDate"]).agg(
         TotalMinutesAsleep=("TotalMinutesAsleep","sum"),
         TotalTimeInBed=("TotalMinutesRecorded","sum")).reset_index()
@@ -54,13 +59,20 @@ def user_segmentation(da):
         AvgVeryActiveMin=("VeryActiveMinutes","mean"),
         DaysLogged=("ActivityDate","count")).reset_index()
     user_avg["ActivityClass"] = user_avg["AvgSteps"].apply(classify_activity)
-    total_days = da["ActivityDate"].nunique()
-    user_avg["LoggingRate"] = (user_avg["DaysLogged"]/total_days*100).clip(upper=100)
+    # Staggered enrollment: measure non-wear (zero-step days) inside each user's
+    # own enrolled window, not against a fixed 32-day denominator.
+    zero = da.assign(Zero=(da["TotalSteps"]==0)).groupby("Id")["Zero"].sum().reset_index(name="ZeroStepDays")
+    user_avg = user_avg.merge(zero, on="Id")
+    user_avg["NonWearRate"] = user_avg["ZeroStepDays"]/user_avg["DaysLogged"]*100
     return user_avg
+
+NONWEAR_BINS = [-0.001, 0, 10, 25, 100]
+NONWEAR_LABELS = ["0% (full)", "1-10%", "11-25%", ">25%"]
 
 def hourly_patterns(path):
     hs = pd.read_csv(path)
     hs["ActivityHour"] = pd.to_datetime(hs["ActivityHour"], format="%m/%d/%Y %I:%M:%S %p")
+    hs = hs[hs["ActivityHour"].dt.normalize() < pd.Timestamp("2016-04-12")]
     hs["Hour"] = hs["ActivityHour"].dt.hour
     hs["Date"] = hs["ActivityHour"].dt.date
     hourly_avg = hs.groupby("Hour")["StepTotal"].mean().reset_index()
@@ -125,10 +137,12 @@ print("sedentary vs sleep:", m[["SedentaryMinutes","TotalMinutesAsleep"]].corr()
 print("steps vs sleep:", m[["TotalSteps","TotalMinutesAsleep"]].corr().iloc[0,1])
 
 print("\n=== LOGGING CONSISTENCY ===")
-bins=[0,50,75,90,100]; labels=["<50%","50-75%","75-90%","90-100%"]
-user_avg["Bucket"]=pd.cut(user_avg["LoggingRate"],bins=bins,labels=labels,include_lowest=True)
-print(user_avg["Bucket"].value_counts().reindex(labels))
-print(user_avg.sort_values("LoggingRate").head(3)[["Id","DaysLogged","LoggingRate"]])
+user_avg["Bucket"]=pd.cut(user_avg["NonWearRate"],bins=NONWEAR_BINS,labels=NONWEAR_LABELS)
+print("Users by share of enrolled days with zero steps:")
+print(user_avg["Bucket"].value_counts().reindex(NONWEAR_LABELS))
+print(user_avg.sort_values("NonWearRate",ascending=False).head(3)[["Id","DaysLogged","ZeroStepDays","NonWearRate"]])
+first_day = da.groupby("Id")["ActivityDate"].min()
+print("users enrolled by date:", {str(d.date()): int((first_day<=d).sum()) for d in pd.to_datetime(["2016-03-12","2016-03-25","2016-04-01"])})
 
 peak_hour = hourly_avg.loc[hourly_avg["StepTotal"].idxmax()]
 print("\npeak hour:", peak_hour["Hour"], peak_hour["StepTotal"])
@@ -146,7 +160,8 @@ ax.set_title("Average Steps by Hour of Day (All Users)",fontsize=13,fontweight="
 savefig(fig,"01_hourly_steps.png")
 
 fig,ax=plt.subplots(figsize=(8,4.5))
-colors=[c["coral"] if d=="Sunday" else (c["gold"] if d in ["Tuesday","Saturday"] else c["teal"]) for d in dow_avg.index]
+top2=set(dow_avg.nlargest(2).index)
+colors=[c["coral"] if d==dow_avg.idxmin() else (c["gold"] if d in top2 else c["teal"]) for d in dow_avg.index]
 ax.bar(dow_avg.index,dow_avg.values,color=colors)
 ax.axhline(7500,color=c["navy"],linestyle="--",linewidth=1,alpha=0.6)
 ax.set_ylabel("Average Total Steps"); ax.set_title("Average Daily Steps by Day of Week",fontsize=13,fontweight="bold",loc="left")
@@ -195,14 +210,11 @@ ax.set_xlabel("Total Steps"); ax.set_ylabel("Calories Burned")
 ax.set_title("Steps vs. Calories Burned",fontsize=13,fontweight="bold",loc="left")
 savefig(fig,"07_steps_calories.png")
 
-bins=[0,50,75,90,100]; labels=["<50%","50-75%","75-90%","90-100%"]
-ua=user_avg.copy()
-ua["Bucket"]=pd.cut(ua["LoggingRate"],bins=bins,labels=labels,include_lowest=True)
-counts=ua["Bucket"].value_counts().reindex(labels)
+counts=user_avg["Bucket"].value_counts().reindex(NONWEAR_LABELS)
 fig,ax=plt.subplots(figsize=(7.5,4.5))
-ax.bar(labels,counts.values,color=[c["coral"],c["gold"],c["teal"],c["navy"]])
-ax.set_ylabel("Number of Users"); ax.set_xlabel("% of Study Days with Logged Data")
-ax.set_title("Device Engagement: Consistency of Daily Logging",fontsize=13,fontweight="bold",loc="left")
+ax.bar(NONWEAR_LABELS,counts.values,color=[c["navy"],c["teal"],c["gold"],c["coral"]])
+ax.set_ylabel("Number of Users"); ax.set_xlabel("% of Enrolled Days with Zero Steps (non-wear)")
+ax.set_title("Device Engagement: Non-Wear Days While Enrolled",fontsize=13,fontweight="bold",loc="left")
 savefig(fig,"08_logging_consistency.png")
 
 print("\nDONE - charts written")
